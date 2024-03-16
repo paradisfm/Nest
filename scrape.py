@@ -3,6 +3,7 @@ import logging
 import json
 import requests
 from urllib import request
+from urllib.parse import urlparse, parse_qs
 from bs4 import BeautifulSoup
 from pydotmap import DotMap
 
@@ -10,40 +11,39 @@ furniture_styles = ["art deco", "boho", "coastal", "colonial", "farmhouse", "mid
 furnitures = ["bedframe", "chair", "coffee_tables", "desks", "dining_tables", "dressers", "lamps", "nightstand", "ottoman", "shelves", "sofas"]
 
 class PinterestImageScraper:
-
     def __init__(self):
         self.downloaded_images = set()
 
-    # search google for given keyword on pinterest
+    # Search Google for given keyword on Pinterest
     def search_urls(self, max_images, key):
-        keyword = key + " pinterest"
-        keyword = keyword.replace(" ", "+")
+        keyword = key.replace(" ", "+") + " pinterest"
         query = f'https://www.google.com/search?hl=en&q={keyword}'
         res = requests.get(query)
         urls = self.get_base_urls(res.content, max_images)
         logging.debug('searching urls...')
         return urls
      
-    # parse search results for pinterest pin urls
+    # Parse search results for Pinterest pin URLs
     def get_base_urls(self, body, max_images):
         url_list = []
         html = BeautifulSoup(body, 'html.parser')
-        links = html.select('#main > div > div > div > a')
+        links = html.select('a[href^="/url?q=https://www.pinterest."]')
         for link in links:
-            link = link.get('href')
-            link = link.replace('/url?q=', '')
-            if link.startswith('https://www.pinterest'):
-                if link not in url_list:
-                    url_list.append(link)
-        if len(url_list) == max_images:
-            return url_list
-                    
-        logging.debug('base urls retrieved...')           
+            href = link.get('href')
+            parsed = urlparse(href)
+            qs = parse_qs(parsed.query)
+            if 'q' in qs:
+                url = qs['q'][0]
+                if 'pinterest.' in url:
+                    url_list.append(url)
+                    if len(url_list) == max_images:
+                        break
+        logging.debug('base urls retrieved...')
         return url_list
 
-    # take image url from pin data
+    # Take image URL from pin data
     def get_image_url(self, max_images, key, piece, style):
-        url_list = self.search_urls(max_images, key)
+        url_list = self.search_urls(max_images, f"{style} {piece}")
         image_urls = []
 
         for url in url_list:
@@ -62,21 +62,23 @@ class PinterestImageScraper:
                         if isinstance(data.props.initialReduxState.pins[pin].images.get("orig"), list):
                             for i in data.props.initialReduxState.pins[pin].images.get("orig"):
                                 image_url = i.get("url")
-                                if image_url not in self.downloaded_images:
+                                if image_url:
                                     image_urls.append(image_url)
-                                    self.downloaded_images.add(image_url)
                         else:
                             image_url = data.props.initialReduxState.pins[pin].images.get("orig").get("url")
-                            if image_url not in self.downloaded_images:
+                            if image_url:
                                 image_urls.append(image_url)
-                                self.downloaded_images.add(image_url)
-                            if image_url is None:
-                                continue
-                            logging.debug(f'image url {image_url} extracted...')
+        logging.debug('image urls extracted...')
+
+        # Filter out None values
+        image_urls = [url for url in image_urls if url is not None]
+
         if len(image_urls) >= max_images:
+            return image_urls[:max_images]
+        else:
             return image_urls
 
-    # retrieve & download images
+    # Retrieve & download images
     def scrape(self, key, max_images):
         for piece in furnitures:
             for style in furniture_styles:
@@ -89,7 +91,7 @@ class PinterestImageScraper:
         if not os.path.exists(fpath):
             os.makedirs(fpath)
         try:
-            fname = os.path.join(fpath, url[40:])
+            fname = os.path.join(fpath, os.path.basename(url))
             if not os.path.exists(fname):
                 request.urlretrieve(url, fname)
                 logging.debug(f'Downloaded {url} to {fname}')
@@ -103,4 +105,4 @@ if __name__ == "__main__":
    logging.basicConfig(level=logging.DEBUG)
    for piece in furnitures:
        for style in furniture_styles:
-           scraper.scrape(key=f"{style} {piece}", max_images=300)
+           scraper.scrape(key="bed", max_images=300)
