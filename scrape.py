@@ -1,85 +1,106 @@
 import os
-import re
+import logging
 import json
 import requests
 from urllib import request
-from bs4 import BeautifulSoup as soup
+from bs4 import BeautifulSoup
 from pydotmap import DotMap
 
-furniture_styles = ["art deco", "asian", "boho", "coastal", "colonial", "farmhouse", "midcentury modern", "minimalist", "modern", "retro", "rustic", "scandinavian", "traditional"]
+furniture_styles = ["art deco", "boho", "coastal", "colonial", "farmhouse", "midcentury modern", "minimalist", "modern", "retro", "rustic", "scandinavian", "traditional"]
 furnitures = ["bedframe", "chair", "coffee_tables", "desks", "dining_tables", "dressers", "lamps", "nightstand", "ottoman", "shelves", "sofas"]
 
 class PinterestImageScraper:
 
-    def get_pinterest_links(body, max_images):
-        searched_urls = []
-        html = soup(body, 'html.parser')
+    def __init__(self):
+        self.downloaded_images = set()
+
+    # search google for given keyword on pinterest
+    def search_urls(self, max_images, key):
+        keyword = key + " pinterest"
+        keyword = keyword.replace(" ", "+")
+        query = f'https://www.google.com/search?hl=en&q={keyword}'
+        res = requests.get(query)
+        urls = self.get_base_urls(res.content, max_images)
+        logging.debug('searching urls...')
+        return urls
+     
+    # parse search results for pinterest pin urls
+    def get_base_urls(self, body, max_images):
+        url_list = []
+        html = BeautifulSoup(body, 'html.parser')
         links = html.select('#main > div > div > div > a')
         for link in links:
             link = link.get('href')
             link = link.replace('/url?q=', '')
             if link.startswith('https://www.pinterest'):
-                if link not in searched_urls:
-                    searched_urls.append(link)
-                    if len(searched_urls) == max_images:
-                        return searched_urls
+                if link not in url_list:
+                    url_list.append(link)
+        if len(url_list) == max_images:
+            return url_list
                     
-        return searched_urls
-
-    def save_image_url(self, max_images, pin_data):
-        url_list = []
-        for js in pin_data:
-            data = DotMap(json.loads(js))
-            urls = []
-            for pin in data.props.initialReduxState.pins:
-                if isinstance(data.props.initialReduxState.pins[pin].images.get("orig"), list):
-                    for i in data.props.initialReduxState.pins[pin].images.get("orig"):
-                        urls.append(i.get("url"))
-                else:
-                    urls.append(data.props.initialReduxState.pins[pin].images.get("orig").get("url"))
-                for url in urls:
-                    if url not in url_list:
-                        if len(url_list) <= max_images:
-                            url_list.append(url)
+        logging.debug('base urls retrieved...')           
         return url_list
-    
-    def extract_urls(self, max_images, key):
-        keyword = key + " pinterest"
-        keyword = keyword.replace(" ", "+")
-        url = f'https://www.google.com/search?hl=en&q={keyword}'
-        res = requests.get(url)
-        extracted_urls = self.get_pinterest_links(res.content, max_images)
-        return extracted_urls
 
+    # take image url from pin data
+    def get_image_url(self, max_images, key, piece, style):
+        url_list = self.search_urls(max_images, key)
+        image_urls = []
+
+        for url in url_list:
+            resp = requests.get(url)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.content, 'html.parser')
+                data_soup = soup.find_all("script", attrs={"id": "__PWS_DATA__"})
+                data_indiv = [a.text for a in data_soup]
+                json_data = json.dumps(data_indiv)
+                json_data = json.loads(json_data)
+
+                for a in json_data:
+                    data = DotMap(json.loads(a))
+
+                    for pin in data.props.initialReduxState.pins:
+                        if isinstance(data.props.initialReduxState.pins[pin].images.get("orig"), list):
+                            for i in data.props.initialReduxState.pins[pin].images.get("orig"):
+                                image_url = i.get("url")
+                                if image_url not in self.downloaded_images:
+                                    image_urls.append(image_url)
+                                    self.downloaded_images.add(image_url)
+                        else:
+                            image_url = data.props.initialReduxState.pins[pin].images.get("orig").get("url")
+                            if image_url not in self.downloaded_images:
+                                image_urls.append(image_url)
+                                self.downloaded_images.add(image_url)
+                            if image_url is None:
+                                continue
+                            logging.debug(f'image url {image_url} extracted...')
+        if len(image_urls) >= max_images:
+            return image_urls
+
+    # retrieve & download images
     def scrape(self, key, max_images):
-        extracted_urls = self.start_scraping(max_images, key)
-        url_list = []
-        data_list = []
-        for url in extracted_urls:
-            res = requests.get(url)
-            html = soup(res.text, 'html.parser')
-            json_data = html.find_all("script", attrs={"id": "__PWS_DATA__"})
-            for a in json_data:
-                data_list.append(a.string)
-        self.download_images(url_list, max_images)
-
-    def download_images(self, urls):
-        for url in urls:
-            for piece in furnitures:
-                for style in furniture_styles:
-                    fpath = rf'data/{piece}/{style}'
-                    if not os.path.exists(fpath):
-                        os.makedirs(fpath)
-                    try:
-                        fname = os.path.join(fpath, url[40:])
-                        request.urlretrieve(url, fname)
-                        print(f'Downloaded {url} to {fname}')
-                    except Exception as e:
-                        print(f'Error downloading {url}: {e}')
+        for piece in furnitures:
+            for style in furniture_styles:
+                urls = self.get_image_url(max_images, key, piece, style)
+                for url in urls:
+                    self.download_image(url, piece, style)
     
-
+    def download_image(self, url, piece, style):
+        fpath = rf'data/{piece}/{style}'
+        if not os.path.exists(fpath):
+            os.makedirs(fpath)
+        try:
+            fname = os.path.join(fpath, url[40:])
+            if not os.path.exists(fname):
+                request.urlretrieve(url, fname)
+                logging.debug(f'Downloaded {url} to {fname}')
+            else:
+                logging.debug(f'File already exists: {fname}')
+        except Exception as e:
+            logging.error(f'Error downloading {url}: {e}')
+   
 if __name__ == "__main__":
-    scraper = PinterestImageScraper()
-    for piece in furnitures:
-        for style in furniture_styles:
-            scraper.scrape(key=f"{style} {piece}", max_images=300)
+   scraper = PinterestImageScraper()
+   logging.basicConfig(level=logging.DEBUG)
+   for piece in furnitures:
+       for style in furniture_styles:
+           scraper.scrape(key=f"{style} {piece}", max_images=300)
