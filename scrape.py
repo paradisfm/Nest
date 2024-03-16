@@ -105,4 +105,4 @@ if __name__ == "__main__":
    logging.basicConfig(level=logging.DEBUG)
    for piece in furnitures:
        for style in furniture_styles:
-           scraper.scrape(key="bed", max_images=300)
+           scraper.scrape(key=f"{style} {piece}", max_images=300)
